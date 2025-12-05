@@ -9,281 +9,249 @@ from .market import Market
 
 
 class WorkshopEnv(gym.Env):
-    metadata = {"render_modes": []}
+    """
+    Environnement Gymnasium pour l’atelier :
+    - 1 step = 1 minute
+    - épisode = 7 jours (10080 minutes)
+    - production P1 (M1) et P2 (M1 puis M2)
+    - commandes de MP avec délai (file de livraisons)
+    - demande = backlog (demande résiduelle)
+    - ventes agrégées 1 fois par heure (time % 60 == 0)
+    - reward : uniquement lors des ventes (et coût MP)
+    """
+
+    metadata = {"render_modes": ["human"]}
 
     def __init__(self):
-
         super().__init__()
 
-        # -----------------------------------
-        #  ACTION SPACE (201 actions)
-        # -----------------------------------
-        # 0–49   → produire P1 (k = action + 1)
-        # 50–99  → produire P2 STEP 1 (k = action - 49)
-        # 100–149→ produire P2 STEP 2 (k = action - 99)
-        # 150–199→ commander MP (q = action - 149)
-        # 200    → WAIT
-        self.action_space = spaces.Discrete(201)
+        self.max_time = 7 * 24 * 60  # 10080 minutes
+        self.raw_capacity = 50
 
-        # -----------------------------------
-        #  OBSERVATION SPACE (13 variables)
-        # -----------------------------------
-        # 0  : time
-        # 1  : M1_busy
-        # 2  : M1_time_left
-        # 3  : M2_busy
-        # 4  : M2_time_left
-        # 5  : stock_raw
-        # 6  : stock_p1
-        # 7  : stock_p2_inter
-        # 8  : stock_p2
-        # 9  : next_delivery_countdown
-        # 10 : backlog_p1 (demande résiduelle P1)
-        # 11 : backlog_p2 (demande résiduelle P2)
-        # 12 : q_total_en_route
-        high = np.array([
-            10080,  # time max = 7 jours
-            1,      # M1_busy
-            5000,   # M1_time_left
-            1,      # M2_busy
-            5000,   # M2_time_left
-            50,     # stock_raw
-            50,     # stock_p1
-            50,     # stock_p2_inter
-            50,     # stock_p2
-            200,    # next delivery countdown
-            500,    # backlog_p1 (borne large)
-            500,    # backlog_p2 (borne large)
-            500     # q_total_en_route (borne large)
-        ], dtype=np.float32)
+        # Vol nocturne : 5 minutes avant minuit, consultable de l’extérieur
+        self.theft_time = 1435
 
-        self.observation_space = spaces.Box(
-            low=np.zeros(13, dtype=np.float32),
-            high=high,
-            dtype=np.float32
-        )
-
-        # Sous-modules
-        self.m1 = Machine()
-        self.m2 = Machine()
-        self.stock = Stock()
-        self.delivery = DeliveryQueue()
-        self.market = Market()  # version jour/nuit
-
+        # État interne
         self.time = 0
-        self.demande_p1 = 0  # backlog P1
-        self.demande_p2 = 0  # backlog P2
-        self.next_delivery_time = 0
-
-        self.reset()
-
-    # ============================================================
-    # RESET
-    # ============================================================
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-
-        self.time = 0
-
-        self.m1 = Machine()
-        self.m2 = Machine()
-        self.stock = Stock()
-        self.delivery = DeliveryQueue()
-        self.market = Market()
-
-        # Backlog initial nul
         self.demande_p1 = 0
         self.demande_p2 = 0
 
-        self.next_delivery_time = 0
+        # Modules internes
+        self.m1 = Machine()
+        self.m2 = Machine()
+        self.stock = Stock(capacity=self.raw_capacity)
+        self.delivery = DeliveryQueue()
+        self.market = Market()
+
+        # ---------------------------------------------------------
+        # OBSERVATION SPACE
+        # ---------------------------------------------------------
+        low = np.array([
+            0.0,  # time
+            0.0, 0.0,  # M1 busy, time_left
+            0.0, 0.0,  # M2 busy, time_left
+            0.0,       # RAW
+            0.0,       # P1
+            0.0,       # P2_inter
+            0.0,       # P2
+            0.0,       # next_delivery_countdown
+            0.0,       # backlog P1
+            0.0,       # backlog P2
+            0.0        # en_route (MP en transit)
+        ], dtype=np.float32)
+
+        high = np.array([
+            float(self.max_time),
+            1.0, 100.0,
+            1.0, 100.0,
+            float(self.raw_capacity),
+            float(self.raw_capacity),
+            float(self.raw_capacity),
+            float(self.raw_capacity),
+            10080.0,
+            1000.0,
+            1000.0,
+            1000.0
+        ], dtype=np.float32)
+
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+
+        # ---------------------------------------------------------
+        # ACTION SPACE
+        # ---------------------------------------------------------
+        # 0–49    : produire P1 sur M1
+        #           k = action + 1  (1 ≤ k ≤ 50)
+        #           durée = 3 * k minutes, consomme k MP, produit k P1
+        #
+        # 50–99   : produire P2_inter (STEP1) sur M1
+        #           k = action - 49 (1 ≤ k ≤ 50)
+        #           durée = 10 * k minutes, consomme k MP, produit k P2_inter
+        #
+        # 100–149 : produire P2 (STEP2) sur M2
+        #           k = action - 99 (1 ≤ k ≤ 50)
+        #           durée = 15 * k minutes, consomme k P2_inter, produit k P2
+        #
+        # 150–199 : commander k unités de MP
+        #           k = action - 149 (1 ≤ k ≤ 50)
+        #
+        # 200     : WAIT (ne rien faire)
+        self.action_space = spaces.Discrete(201)
+
+    # =============================================================
+    # RESET
+    # =============================================================
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+
+        self.time = 0
+        self.demande_p1 = 0
+        self.demande_p2 = 0
+
+        self.m1.reset()
+        self.m2.reset()
+        self.stock.reset()
+        self.delivery.reset()
+        self.market = Market()
 
         return self._get_obs(), {}
 
-    # ============================================================
+    # =============================================================
     # STEP
-    # ============================================================
-    def step(self, action):
+    # =============================================================
+    def step(self, action: int):
 
         reward = 0.0
 
-        # ---------------------------------------
-        # 1) DÉCODAGE ACTION
-        # ---------------------------------------
+        # ---------------------------------------------------------
+        # 1) ACTION AGENT
+        # ---------------------------------------------------------
+        if action == 200:
+            # WAIT : ne rien faire
+            pass
 
-        if 0 <= action <= 49:
-            action_type = "P1"
-            k = action + 1
+        # -------------------- P1 sur M1 -------------------------
+        elif 0 <= action <= 49:
+            k = action + 1  # 1 à 50
+            if (not self.m1.busy) and self.stock.consume_raw(k):
+                # Durée = 3 minutes par unité de P1
+                duration = 3 * k
+                self.m1.start_batch(duration=duration, k=k, batch_type="P1_MULTI")
 
+        # ----------------- P2 STEP1 sur M1 ----------------------
         elif 50 <= action <= 99:
-            action_type = "P2STEP1"
-            k = action - 49
+            k = action - 49  # 1 à 50
+            if (not self.m1.busy) and self.stock.consume_raw(k):
+                # Durée = 10 minutes par unité de P2_inter
+                duration = 10 * k
+                self.m1.start_batch(duration=duration, k=k, batch_type="P2STEP1_MULTI")
 
+        # ----------------- P2 STEP2 sur M2 ----------------------
         elif 100 <= action <= 149:
-            action_type = "P2STEP2"
-            k = action - 99
+            k = action - 99  # 1 à 50
+            if (not self.m2.busy) and self.stock.p2_inter >= k:
+                # On consomme k unités de P2_inter d'un coup
+                self.stock.p2_inter -= k
+                # Durée = 15 minutes par unité de P2
+                duration = 15 * k
+                self.m2.start_batch(duration=duration, k=k, batch_type="P2STEP2_MULTI")
 
+        # ----------------- Commande MP --------------------------
         elif 150 <= action <= 199:
-            action_type = "ORDER"
-            q = action - 149
+            k = action - 149  # 1 à 50
+            q = k
+            reward -= float(q)
 
-        elif action == 200:
-            action_type = "WAIT"
+            # Jitter ± 2 minutes
+            jitter = np.random.randint(-2, 3)
+            arrival_time = self.time + 120 + jitter
+            arrival_time = max(arrival_time, self.time + 1)
 
-        else:
-            raise ValueError(f"Action invalide : {action}. WAIT = 200 est la seule action hors intervalles.")
+            self.delivery.schedule(q, arrival_time)
 
-        # ---------------------------------------
-        # 2) VALIDATION DES CONTRAINTES
-        # ---------------------------------------
+        # Toute valeur d'action hors [0,200] ne devrait pas arriver avec Discrete(201)
 
-        if action_type in ["P1", "P2STEP1"] and self.m1.busy:
-            action_type = "WAIT"
-
-        if action_type == "P2STEP2" and self.m2.busy:
-            action_type = "WAIT"
-
-        if action_type in ["P1", "P2STEP1"] and action_type != "WAIT":
-            if self.stock.raw < k:
-                action_type = "WAIT"
-
-        if action_type == "P2STEP2" and self.stock.p2_inter < k:
-            action_type = "WAIT"
-
-        # ---------------------------------------
-        # 3) LANCEMENT DES ACTIONS
-        # ---------------------------------------
-
-        if action_type == "P1":
-            duration = 3 * k
-            self.stock.consume_raw(k)
-            self.m1.start_batch(duration, k, "P1")
-
-        elif action_type == "P2STEP1":
-            duration = 10 * k
-            self.stock.consume_raw(k)
-            self.m1.start_batch(duration, k, "P2STEP1")
-
-        elif action_type == "P2STEP2":
-            duration = 15 * k
-            self.stock.consume_p2_inter(k)
-            self.m2.start_batch(duration, k, "P2STEP2")
-
-        elif action_type == "ORDER":
-            reward -= q
-            self.next_delivery_time = self.time + 120
-            self.delivery.schedule(q, self.next_delivery_time)
-
-        # WAIT ne fait rien
-
-        # ---------------------------------------
-        # 4) AVANCEMENT DU TEMPS (1 minute)
-        # ---------------------------------------
-
-        self.time += 1
-
-        m1_finished = self.m1.tick()
-        m2_finished = self.m2.tick()
-
-        # ---------------------------------------
-        # 5) BATCHS TERMINÉS → MISE À JOUR STOCKS
-        # ---------------------------------------
-
-        if m1_finished:
-            if self.m1.batch_type == "P1":
+        # ---------------------------------------------------------
+        # 2) MACHINES — AVANCEMENT
+        # ---------------------------------------------------------
+        if self.m1.tick():
+            if self.m1.batch_type == "P1_MULTI":
                 self.stock.add_p1(self.m1.batch_k)
-            elif self.m1.batch_type == "P2STEP1":
+            elif self.m1.batch_type == "P2STEP1_MULTI":
                 self.stock.add_p2_inter(self.m1.batch_k)
             self.m1.reset_after_batch()
 
-        if m2_finished:
-            if self.m2.batch_type == "P2STEP2":
+        if self.m2.tick():
+            if self.m2.batch_type == "P2STEP2_MULTI":
                 self.stock.add_p2(self.m2.batch_k)
             self.m2.reset_after_batch()
 
-        # ---------------------------------------
-        # 6) LIVRAISONS
-        # ---------------------------------------
-
+        # ---------------------------------------------------------
+        # 3) LIVRAISONS
+        # ---------------------------------------------------------
         delivered = self.delivery.tick(self.time)
         if delivered > 0:
             self.stock.add_raw(delivered)
 
-        # ---------------------------------------
-        # 7) DEMANDE & VENTES (toutes les heures, backlog)
-        # ---------------------------------------
-        # → self.demande_p1 / p2 = carnet de commandes non satisfaites
+        # ---------------------------------------------------------
+        # 4) DEMANDE + VENTES (t % 60 == 0)
+        # ---------------------------------------------------------
+        if self.time > 0 and (self.time % 60 == 0):
 
-        if self.time % 60 == 0 and self.time > 0:
+            new_d1, new_d2 = self.market.sample_demand(self.time, 60)
+            self.demande_p1 += int(new_d1)
+            self.demande_p2 += int(new_d2)
 
-            # 7.1 Nouvelle demande horaire
-            new_d1, new_d2 = self.market.sample_demand(
-                time_minute=self.time,
-                period_minutes=60
+            sold_p1, sold_p2 = self.market.compute_sales(
+                self.stock, self.demande_p1, self.demande_p2
             )
 
-            # Ajout au backlog
-            self.demande_p1 += new_d1
-            self.demande_p2 += new_d2
-
-            # 7.2 Ventes : on sert le backlog avec le stock dispo
-            revenue, sold_p1, sold_p2 = self.market.compute_sales(
-                self.stock,
-                self.demande_p1,
-                self.demande_p2
-            )
-
-            reward += revenue
-
-            # 7.3 Mise à jour du backlog (demande résiduelle)
+            reward += 2.0 * sold_p1 + 20.0 * sold_p2
             self.demande_p1 -= sold_p1
             self.demande_p2 -= sold_p2
 
-        # IMPORTANT : on ne remet plus jamais la demande à 0,
-        # elle représente le backlog global.
+        # ---------------------------------------------------------
+        # 5) INCRÉMENT DU TEMPS
+        # ---------------------------------------------------------
+        self.time += 1
 
-        # ---------------------------------------
-        # 8) VOL NOCTURNE (chaque 1440 minutes)
-        # ---------------------------------------
+        # ---------------------------------------------------------
+        # 6) VOL NOCTURNE (5 min avant minuit)
+        # ---------------------------------------------------------
+        if self.time % 1440 == self.theft_time:
+            self.market.apply_theft(self.stock)
 
-        if self.time % 1440 == 0 and self.time > 0:
-            self.stock.p1 = int(self.stock.p1 * 0.9)
-            self.stock.p2 = int(self.stock.p2 * 0.9)
+        # ---------------------------------------------------------
+        # 7) TERMINATION
+        # ---------------------------------------------------------
+        terminated = self.time >= self.max_time
 
-        # ---------------------------------------
-        # 9) FIN D'ÉPISODE (7 jours)
-        # ---------------------------------------
+        return self._get_obs(), reward, terminated, False, {}
 
-        done = self.time >= 10080   # 7 jours
-
-        return self._get_obs(), reward, done, False, {}
-
-    # ============================================================
+    # =============================================================
     # OBSERVATION
-    # ============================================================
+    # =============================================================
     def _get_obs(self):
 
-        # Total d’unités commandées mais non livrées
-        q_total_en_route = float(sum(q for (q, _) in self.delivery.queue))
+        if self.delivery.queue:
+            next_t = min(t for (q, t) in self.delivery.queue)
+            next_delivery_countdown = max(next_t - self.time, 0)
+            q_total = sum(q for (q, t) in self.delivery.queue)
+        else:
+            next_delivery_countdown = 0
+            q_total = 0
 
         return np.array([
             float(self.time),
-
             float(self.m1.busy),
             float(self.m1.time_left),
-
             float(self.m2.busy),
             float(self.m2.time_left),
-
             float(self.stock.raw),
             float(self.stock.p1),
             float(self.stock.p2_inter),
             float(self.stock.p2),
-
-            float(self.next_delivery_time - self.time
-                  if self.next_delivery_time > self.time else 0),
-
-            float(self.demande_p1),   # backlog P1
-            float(self.demande_p2),   # backlog P2
-
-            q_total_en_route
+            float(next_delivery_countdown),
+            float(self.demande_p1),
+            float(self.demande_p2),
+            float(q_total)
         ], dtype=np.float32)
