@@ -2,71 +2,61 @@ import numpy as np
 
 
 class Market:
-    """
-    Modélise la demande avec :
-    - profil jour / nuit
-    - agrégation sur une période (par défaut : 60 minutes)
-    """
+    def __init__(self, lambda_day=0.1, lambda_night=0.02):
+        self.lambda_day = lambda_day
+        self.lambda_night = lambda_night
 
-    def __init__(self,
-                 lambda_p1_day=1.0,     # demande moyenne P1 / minute en journée
-                 lambda_p1_night=0.1,   # demande moyenne P1 / minute la nuit
-                 lambda_p2_day=0.2,     # demande moyenne P2 / minute en journée
-                 lambda_p2_night=0.02   # demande moyenne P2 / minute la nuit
-                 ):
-        self.lambda_p1_day = lambda_p1_day
-        self.lambda_p1_night = lambda_p1_night
-        self.lambda_p2_day = lambda_p2_day
-        self.lambda_p2_night = lambda_p2_night
-
-    def _get_lambdas_for_time(self, time_minute: int):
+    def sample_demand(self, current_time: int, period_minutes: int = 60):
         """
-        time_minute : minute globale dans l'épisode.
-        On en déduit la minute dans la journée (0-1439) puis on choisit
-        les lambdas jour / nuit.
+        Génère la demande P1 et P2 sur une période donnée.
+        Le marché est plus actif en journée qu'en nuit.
         """
-        minute_in_day = time_minute % 1440
 
-        # JOUR = 8h à 20h  => 480 à 1200
-        if 480 <= minute_in_day < 1200:
-            lambda_p1 = self.lambda_p1_day
-            lambda_p2 = self.lambda_p2_day
-        else:
-            lambda_p1 = self.lambda_p1_night
-            lambda_p2 = self.lambda_p2_night
+        hour = (current_time // 60) % 24
+        is_day = 8 <= hour < 20
 
-        return lambda_p1, lambda_p2
+        lam = self.lambda_day if is_day else self.lambda_night
+        mean_requests = lam * period_minutes
 
-    def sample_demand(self, time_minute: int, period_minutes: int = 60):
-        """
-        Génère la demande agrégée sur 'period_minutes' minutes.
-        On utilise un Poisson(λ * période), avec λ dépendant du moment de la journée.
-        """
-        lambda_p1, lambda_p2 = self._get_lambdas_for_time(time_minute)
-
-        d1 = np.random.poisson(lambda_p1 * period_minutes)
-        d2 = np.random.poisson(lambda_p2 * period_minutes)
-
-        return d1, d2
+        # demande totale
+        total = np.random.poisson(mean_requests)
+        p1_frac = 0.7
+        p1 = int(total * p1_frac)
+        p2 = total - p1
+        return p1, p2
 
     def compute_sales(self, stock, backlog_p1: int, backlog_p2: int):
         """
-        Calcule les ventes à partir :
-        - du stock actuel (stock.p1, stock.p2)
-        - du carnet de commandes (backlog_p1, backlog_p2)
-
-        Retourne :
-        - revenue : revenu total
-        - s1 : quantités de P1 vendues
-        - s2 : quantités de P2 vendues
-        et met à jour le stock.
+        Détermine UNIQUEMENT les quantités vendues.
+        Le reward est calculé dans l'environnement.
         """
+
         s1 = min(stock.p1, backlog_p1)
         s2 = min(stock.p2, backlog_p2)
 
-        revenue = 2 * s1 + 20 * s2
-
+        # débit du stock
         stock.p1 -= s1
         stock.p2 -= s2
 
-        return revenue, s1, s2
+        # Retourne EXACTEMENT 2 valeurs (pas 3 !)
+        return s1, s2
+
+    def apply_theft(self, stock):
+        """Applique le vol nocturne : 10 % de pertes sur P1 et P2.
+
+        La règle est :
+            P1 <- int(P1 * 0.9)
+            P2 <- int(P2 * 0.9)
+
+        On retourne les quantités volées (stolen_p1, stolen_p2) à titre informatif.
+        """
+        old_p1 = stock.p1
+        old_p2 = stock.p2
+
+        stock.p1 = int(stock.p1 * 0.9)
+        stock.p2 = int(stock.p2 * 0.9)
+
+        stolen_p1 = old_p1 - stock.p1
+        stolen_p2 = old_p2 - stock.p2
+
+        return stolen_p1, stolen_p2
