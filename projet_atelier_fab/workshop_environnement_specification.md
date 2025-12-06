@@ -8,7 +8,7 @@ Il intègre toutes les modifications récentes :
 - **épisode = 7 jours** (10080 minutes)
 - machines véritablement **multitâches** (batches asynchrones)
 - **demande = backlog résiduel** (carnet de commandes non satisfaites)
-- **ventes toutes les 60 minutes** 
+- **ventes toutes les 15 minutes** 
 - demande **jour / nuit**
 - production de P2 en **deux étapes**
 - **commandes de MP** avec délai aléatoire autour de 120 minutes (120 ± 2 minutes, jitter uniforme)
@@ -93,10 +93,10 @@ Livraison ajoute à `stock_raw`.
 `demande_p1` et `demande_p2` = carnet de commandes non servies.
 
 ### 5.2 Fréquence des ventes  
-**Une vente a lieu toutes les 60 minutes** :
+**Une vente a lieu toutes les 15 minutes** :
 
 ```
-time > 0 and time % 60 == 0
+time > 0 and time % 15 == 0
 ```
 
 Aucune autre vente dans l’intervalle.
@@ -150,6 +150,9 @@ stock_p2 = floor(stock_p2 * 0.9)
 
 - ventes : +2/P1 et +20/P2
 - commande MP : coût `−q`
+- WAIT : -0.2/action
+- action impossible : -1
+- lancement de production : +0.5*k pour P1, +5*k pour P2STEP1, +15*k pour P2STEP2
 
 ---
 
@@ -201,8 +204,8 @@ L’environnement modélise :
 
 - production multitâche,
 - backlog cumulatif,
-- **ventes toutes les 60 minutes**,
-- carnet de commandes dynamique,
+- **ventes toutes les 15 minutes**,
+- carnet de commandes dynamique toutes les 15 minutes, juste avant les ventes,
 - commandes MP avec délai,
 - commandes MP avec délai aléatoire autour de 120 minutes,
 - actions discrètes,

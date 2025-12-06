@@ -11,12 +11,12 @@ Il est désormais **aligné** avec la spécification officielle :
 
 L'environnement simule un **atelier industriel multitâche** dans lequel un agent doit :
 - planifier la production sur deux machines,
-- gérer un **carnet de commandes (backlog)** mis a jour toutes les 60 minutes,
+- gérer un **carnet de commandes (backlog)** mis a jour toutes les 15 minutes,
 - commander de la matière première avec délai (environ 120 minutes),
 - maintenir les stocks à un niveau pertinent malgré un **vol nocturne** (11:55 pm),
 - maximiser le revenu sur un horizon de **7 jours (10080 minutes)**.
 
-L'agent sera entraîné avec un algorithme de type **DQN** sur un environnement Gymnasium personnalisé (`WorkshopEnv`).
+L'agent sera entraîné avec un algorithme de type **DQN avec SB3** sur un environnement Gymnasium personnalisé (`WorkshopEnv`).
 
 ---
 
@@ -49,7 +49,7 @@ env/
 2. Les machines avancent d'une minute (si elles sont occupées).
 3. Les éventuels batches terminés mettent à jour les stocks.
 4. Les livraisons de MP prévues pour cette minute sont ajoutées au stock.
-5. Toutes les **60 minutes**, une nouvelle demande est générée et les ventes sont calculées.
+5. Toutes les **15 minutes**, une nouvelle demande est générée et les ventes sont calculées.
 6. Toutes les **1440 minutes**, un vol nocturne réduit les stocks de P1 et P2.
 7. Un nouvel état (13 variables) et un reward sont renvoyés à l'agent.
 
@@ -94,7 +94,7 @@ L'observation inclut :
 
 La demande n'est plus ponctuelle, mais modélisée comme un **backlog** (carnet de commandes non servies).
 
-- Une fois par heure (`time % 60 == 0`), on génère une **nouvelle demande horaire** pour P1 et P2 :
+- Une fois par quart d'heure (`time % 15 == 0`), on génère une **nouvelle demande horaire** pour P1 et P2 :
   - la demande dépend de l'heure de la journée (**profil jour/nuit**),
   - elle suit une loi de Poisson agrégée sur 60 minutes.
 
@@ -192,8 +192,7 @@ Le reward par step peut inclure :
   - `+ 20 * ventes_p2`
 - **coût des commandes de MP** :
   - `− q` lors d’une action de commande
-- aucune pénalité explicite sur le backlog dans la version de base
-  - mais une pénalisation du backlog peut être ajoutée plus tard si nécessaire.
+- pénalité explicite appliquee sur le backlog 
 
 ---
 

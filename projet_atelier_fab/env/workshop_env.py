@@ -1,3 +1,9 @@
+
+# ================================================================
+# WORKSHOP ENVIRONMENT — FINAL VERSION (OPTION C, FULLY COMMENTED)
+# Production au fil de l'eau + commentaires pédagogiques complets
+# ================================================================
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -10,14 +16,40 @@ from .market import Market
 
 class WorkshopEnv(gym.Env):
     """
-    Environnement Gymnasium pour l’atelier :
-    - 1 step = 1 minute
-    - épisode = 7 jours (10080 minutes)
-    - production P1 (M1) et P2 (M1 puis M2)
-    - commandes de MP avec délai (file de livraisons)
-    - demande = backlog (demande résiduelle)
-    - ventes agrégées 1 fois par heure (time % 60 == 0)
-    - reward : uniquement lors des ventes (et coût MP)
+    ============================================================
+    ENVIRONNEMENT ATELIER — VERSION EXPLICATIVE ET STRUCTURÉE
+    ============================================================
+
+    MODELISATION GÉNÉRALE
+    ----------------------
+    - L'environnement simule un atelier industriel minute par minute.
+    - Un épisode complet dure 7 jours : 7 × 24 × 60 = 10 080 minutes.
+    - Deux machines :
+        M1 : P1 et P2_STEP1
+        M2 : P2_STEP2
+    - Stock de matières premières (raw), P1, P2_inter, P2.
+    - Commandes de matières premières avec délai.
+    - Demande client toutes les 15 minutes.
+    - Système de backlog pénalisant.
+    - Production « au fil de l'eau » : 1 unité visible dès qu'elle est produite.
+
+    OBJECTIFS DE L'AGENT
+    ---------------------
+    - Produire la bonne quantité au bon moment.
+    - Minimiser le backlog (pénalité chaque minute).
+    - Honorer la demande pour gagner des récompenses de vente.
+    - Optimiser l'utilisation des machines et des stocks.
+
+    STRUCTURE DU STEP()
+    --------------------
+    1) Traitement de l'action (production / commande / attente)
+    2) Avancement des machines minute par minute + production unitaire
+    3) Livraison potentielle de matières premières
+    4) Passage du temps (+1 min)
+    5) Demande + ventes (toutes les 15 minutes)
+    6) Vol nocturne (1 fois par jour)
+    7) Pénalité backlog
+    8) Construction de l'observation
     """
 
     metadata = {"render_modes": ["human"]}
@@ -25,81 +57,58 @@ class WorkshopEnv(gym.Env):
     def __init__(self):
         super().__init__()
 
-        self.max_time = 7 * 24 * 60  # 10080 minutes
+        # Durée maximale d'un épisode
+        self.max_time = 7 * 24 * 60  # 10 080 minutes
+
+        # Capacité des stocks
         self.raw_capacity = 50
 
-        # Vol nocturne : 5 minutes avant minuit, consultable de l’extérieur
+        # Vol planifié chaque jour (minute 1435 = 23h55)
         self.theft_time = 1435
 
-        # État interne
+        # Initialisation du temps et des backlogs
         self.time = 0
         self.demande_p1 = 0
         self.demande_p2 = 0
 
-        # Modules internes
-        self.m1 = Machine()
-        self.m2 = Machine()
+        # Machines
+        self.m1 = Machine()  # production P1 + STEP1
+        self.m2 = Machine()  # production STEP2
+
+        # Différents modules
         self.stock = Stock(capacity=self.raw_capacity)
         self.delivery = DeliveryQueue()
         self.market = Market()
 
-        # ---------------------------------------------------------
-        # OBSERVATION SPACE
-        # ---------------------------------------------------------
-        low = np.array([
-            0.0,  # time
-            0.0, 0.0,  # M1 busy, time_left
-            0.0, 0.0,  # M2 busy, time_left
-            0.0,       # RAW
-            0.0,       # P1
-            0.0,       # P2_inter
-            0.0,       # P2
-            0.0,       # next_delivery_countdown
-            0.0,       # backlog P1
-            0.0,       # backlog P2
-            0.0        # en_route (MP en transit)
-        ], dtype=np.float32)
-
+        # -----------------------------------------------------------
+        # ESPACE D'OBSERVATION (13 DIMENSIONS)
+        # -----------------------------------------------------------
+        low = np.zeros(13, dtype=np.float32)
         high = np.array([
-            float(self.max_time),
-            1.0, 100.0,
-            1.0, 100.0,
-            float(self.raw_capacity),
-            float(self.raw_capacity),
-            float(self.raw_capacity),
-            float(self.raw_capacity),
-            10080.0,
-            1000.0,
-            1000.0,
-            1000.0
+            float(self.max_time),  # minute courante
+            1.0, 100.0,            # état M1
+            1.0, 100.0,            # état M2
+            float(self.raw_capacity), float(self.raw_capacity),
+            float(self.raw_capacity), float(self.raw_capacity),
+            10080.0,               # délai prochaine livraison
+            1000.0, 1000.0, 1000.0 # backlog + MP en transit
         ], dtype=np.float32)
 
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
-        # ---------------------------------------------------------
-        # ACTION SPACE
-        # ---------------------------------------------------------
-        # 0–49    : produire P1 sur M1
-        #           k = action + 1  (1 ≤ k ≤ 50)
-        #           durée = 3 * k minutes, consomme k MP, produit k P1
-        #
-        # 50–99   : produire P2_inter (STEP1) sur M1
-        #           k = action - 49 (1 ≤ k ≤ 50)
-        #           durée = 10 * k minutes, consomme k MP, produit k P2_inter
-        #
-        # 100–149 : produire P2 (STEP2) sur M2
-        #           k = action - 99 (1 ≤ k ≤ 50)
-        #           durée = 15 * k minutes, consomme k P2_inter, produit k P2
-        #
-        # 150–199 : commander k unités de MP
-        #           k = action - 149 (1 ≤ k ≤ 50)
-        #
-        # 200     : WAIT (ne rien faire)
+        # -----------------------------------------------------------
+        # ESPACE D'ACTIONS (201 ACTIONS)
+        # -----------------------------------------------------------
+        # 0–49    → Produire P1 (k = a+1)
+        # 50–99   → Produire P2_STEP1 (k = a-49)
+        # 100–149 → Produire P2_STEP2 (k = a-99)
+        # 150–199 → Commander MP (k = a-149)
+        # 200     → WAIT
         self.action_space = spaces.Discrete(201)
 
-    # =============================================================
-    # RESET
-    # =============================================================
+    # ================================================================
+    # RESET DE L'ÉPISODE
+    # ================================================================
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
 
@@ -115,89 +124,128 @@ class WorkshopEnv(gym.Env):
 
         return self._get_obs(), {}
 
-    # =============================================================
-    # STEP
-    # =============================================================
+    # ================================================================
+    # ACTION MASK (OPTIONS PERMISES À L'AGENT)
+    # ================================================================
+    def get_action_mask(self):
+        mask = np.ones(201, dtype=bool)
+
+        if self.m1.busy:
+            mask[0:100] = False
+
+        if self.m2.busy:
+            mask[100:150] = False
+
+        for a in range(0, 100):
+            k = (a + 1) if a < 50 else (a - 49)
+            if self.stock.raw < k:
+                mask[a] = False
+
+        for a in range(100, 150):
+            k = a - 99
+            if self.stock.p2_inter < k:
+                mask[a] = False
+
+        return mask
+
+    # ================================================================
+    # STEP — UNE MINUTE DE SIMULATION
+    # ================================================================
     def step(self, action: int):
 
         reward = 0.0
 
-        # ---------------------------------------------------------
-        # 1) ACTION AGENT
-        # ---------------------------------------------------------
+        # -----------------------------------------------------------
+        # 1) TRAITEMENT DE L'ACTION
+        # -----------------------------------------------------------
+
+        # Action WAIT
         if action == 200:
-            # WAIT : ne rien faire
-            pass
+            reward -= 0.2  # légère pénalité
 
-        # -------------------- P1 sur M1 -------------------------
+        # Production P1
         elif 0 <= action <= 49:
-            k = action + 1  # 1 à 50
+            k = action + 1
             if (not self.m1.busy) and self.stock.consume_raw(k):
-                # Durée = 3 minutes par unité de P1
-                duration = 3 * k
+                duration = 3 * k  # durée totale
                 self.m1.start_batch(duration=duration, k=k, batch_type="P1_MULTI")
+                reward += 0.5 * k
+            else:
+                reward -= 1
 
-        # ----------------- P2 STEP1 sur M1 ----------------------
+        # Production P2 — Étape 1
         elif 50 <= action <= 99:
-            k = action - 49  # 1 à 50
+            k = action - 49
             if (not self.m1.busy) and self.stock.consume_raw(k):
-                # Durée = 10 minutes par unité de P2_inter
                 duration = 10 * k
                 self.m1.start_batch(duration=duration, k=k, batch_type="P2STEP1_MULTI")
+                reward += 5 * k
+            else:
+                reward -= 1
 
-        # ----------------- P2 STEP2 sur M2 ----------------------
+        # Production P2 — Étape 2
         elif 100 <= action <= 149:
-            k = action - 99  # 1 à 50
+            k = action - 99
             if (not self.m2.busy) and self.stock.p2_inter >= k:
-                # On consomme k unités de P2_inter d'un coup
                 self.stock.p2_inter -= k
-                # Durée = 15 minutes par unité de P2
                 duration = 15 * k
                 self.m2.start_batch(duration=duration, k=k, batch_type="P2STEP2_MULTI")
+                reward += 15 * k
+            else:
+                reward -= 1
 
-        # ----------------- Commande MP --------------------------
+        # Commande MP
         elif 150 <= action <= 199:
-            k = action - 149  # 1 à 50
-            q = k
-            reward -= float(q)
-
-            # Jitter ± 2 minutes
+            k = action - 149
+            reward -= float(k)
             jitter = np.random.randint(-2, 3)
-            arrival_time = self.time + 120 + jitter
-            arrival_time = max(arrival_time, self.time + 1)
+            arrival_time = max(self.time + 1, self.time + 120 + jitter)
+            self.delivery.schedule(k, arrival_time)
 
-            self.delivery.schedule(q, arrival_time)
+        # -----------------------------------------------------------
+        # 2) PRODUCTION AU FIL DE L'EAU — MACHINE M1
+        # -----------------------------------------------------------
+        res_m1 = self.m1.tick()
 
-        # Toute valeur d'action hors [0,200] ne devrait pas arriver avec Discrete(201)
-
-        # ---------------------------------------------------------
-        # 2) MACHINES — AVANCEMENT
-        # ---------------------------------------------------------
-        if self.m1.tick():
+        if res_m1 in ("unit", "last_unit"):
             if self.m1.batch_type == "P1_MULTI":
-                self.stock.add_p1(self.m1.batch_k)
+                self.stock.add_p1(1)
             elif self.m1.batch_type == "P2STEP1_MULTI":
-                self.stock.add_p2_inter(self.m1.batch_k)
-            self.m1.reset_after_batch()
+                self.stock.add_p2_inter(1)
 
-        if self.m2.tick():
+            if res_m1 == "last_unit":
+                self.m1.reset_after_batch()
+
+        # -----------------------------------------------------------
+        # 3) PRODUCTION AU FIL DE L'EAU — MACHINE M2
+        # -----------------------------------------------------------
+        res_m2 = self.m2.tick()
+
+        if res_m2 in ("unit", "last_unit"):
             if self.m2.batch_type == "P2STEP2_MULTI":
-                self.stock.add_p2(self.m2.batch_k)
-            self.m2.reset_after_batch()
+                self.stock.add_p2(1)
 
-        # ---------------------------------------------------------
-        # 3) LIVRAISONS
-        # ---------------------------------------------------------
+            if res_m2 == "last_unit":
+                self.m2.reset_after_batch()
+
+        # -----------------------------------------------------------
+        # 4) LIVRAISONS DE MP
+        # -----------------------------------------------------------
         delivered = self.delivery.tick(self.time)
         if delivered > 0:
             self.stock.add_raw(delivered)
 
-        # ---------------------------------------------------------
-        # 4) DEMANDE + VENTES (t % 60 == 0)
-        # ---------------------------------------------------------
-        if self.time > 0 and (self.time % 60 == 0):
+        # -----------------------------------------------------------
+        # 5) INCRÉMENT DU TEMPS
+        # -----------------------------------------------------------
+        self.time += 1
 
-            new_d1, new_d2 = self.market.sample_demand(self.time, 60)
+        # -----------------------------------------------------------
+        # 6) DEMANDE + VENTES — toutes les 15 minutes
+        # -----------------------------------------------------------
+        if self.time % 15 == 0:
+
+            new_d1, new_d2 = self.market.sample_demand(self.time, 15)
             self.demande_p1 += int(new_d1)
             self.demande_p2 += int(new_d2)
 
@@ -206,30 +254,33 @@ class WorkshopEnv(gym.Env):
             )
 
             reward += 2.0 * sold_p1 + 20.0 * sold_p2
+
             self.demande_p1 -= sold_p1
             self.demande_p2 -= sold_p2
 
-        # ---------------------------------------------------------
-        # 5) INCRÉMENT DU TEMPS
-        # ---------------------------------------------------------
-        self.time += 1
+            # -----------------------------------------------------------
+            # PÉNALITÉ BACKLOG — CHAQUE MINUTE
+            # -----------------------------------------------------------
+            backlog = self.demande_p1 + self.demande_p2
+            reward -= 0.02 * float(backlog)
 
-        # ---------------------------------------------------------
-        # 6) VOL NOCTURNE (5 min avant minuit)
-        # ---------------------------------------------------------
+        # -----------------------------------------------------------
+        # 7) VOL QUOTIDIEN (minute 1435)
+        # -----------------------------------------------------------
         if self.time % 1440 == self.theft_time:
             self.market.apply_theft(self.stock)
 
-        # ---------------------------------------------------------
-        # 7) TERMINATION
-        # ---------------------------------------------------------
+
+        # -----------------------------------------------------------
+        # 8) TERMINAISON
+        # -----------------------------------------------------------
         terminated = self.time >= self.max_time
 
         return self._get_obs(), reward, terminated, False, {}
 
-    # =============================================================
-    # OBSERVATION
-    # =============================================================
+    # ================================================================
+    # CONSTRUCTION DE L'OBSERVATION POUR SB3
+    # ================================================================
     def _get_obs(self):
 
         if self.delivery.queue:
