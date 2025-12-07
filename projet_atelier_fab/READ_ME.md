@@ -3,7 +3,7 @@
 Ce document décrit l'état **corrigé et à jour** de l'environnement d'atelier industriel utilisé pour l'apprentissage par renforcement (DQN) dans le projet.
 
 Il est désormais **aligné** avec la spécification officielle :
-`workshop_environment_specification_DQN_BACKLOG_FINAL.md`.
+`workshop_environment_specification.md`.
 
 ---
 
@@ -11,12 +11,12 @@ Il est désormais **aligné** avec la spécification officielle :
 
 L'environnement simule un **atelier industriel multitâche** dans lequel un agent doit :
 - planifier la production sur deux machines,
-- gérer un **carnet de commandes (backlog)**,
-- commander de la matière première avec délai,
-- maintenir les stocks à un niveau pertinent malgré un **vol nocturne**,
+- gérer un **carnet de commandes (backlog)** mis a jour toutes les 15 minutes,
+- commander de la matière première avec délai (environ 120 minutes),
+- maintenir les stocks à un niveau pertinent malgré un **vol nocturne** (11:55 pm),
 - maximiser le revenu sur un horizon de **7 jours (10080 minutes)**.
 
-L'agent est entraîné avec un algorithme de type **DQN** sur un environnement Gymnasium personnalisé (`WorkshopEnv`).
+L'agent sera entraîné avec un algorithme de type **DQN avec SB3** sur un environnement Gymnasium personnalisé (`WorkshopEnv`).
 
 ---
 
@@ -34,11 +34,6 @@ env/
 └── workshop_env.py   → environnement Gymnasium complet (classe WorkshopEnv)
 ```
 
-Le fichier de spécification général est :
-
-- `workshop_environment_specification_DQN_BACKLOG_FINAL.md`
-
-Ce README est un **résumé opérationnel** destiné à la compréhension rapide de l'environnement côté RL.
 
 ---
 
@@ -54,7 +49,7 @@ Ce README est un **résumé opérationnel** destiné à la compréhension rapide
 2. Les machines avancent d'une minute (si elles sont occupées).
 3. Les éventuels batches terminés mettent à jour les stocks.
 4. Les livraisons de MP prévues pour cette minute sont ajoutées au stock.
-5. Toutes les **60 minutes**, une nouvelle demande est générée et les ventes sont calculées.
+5. Toutes les **15 minutes**, une nouvelle demande est générée et les ventes sont calculées.
 6. Toutes les **1440 minutes**, un vol nocturne réduit les stocks de P1 et P2.
 7. Un nouvel état (13 variables) et un reward sont renvoyés à l'agent.
 
@@ -87,7 +82,7 @@ Les méthodes permettent de consommer / ajouter du stock en respectant des borne
 
 ### 4.3 Livraisons (delivery.py)
 
-- Les commandes de MP sont planifiées avec un **délai fixe de 120 minutes**.
+- Les commandes de MP sont planifiées avec un **délai d'environ 120 minutes**.
 - Chaque commande est stockée comme `(quantité, time_livraison)` dans une file FIFO.
 - À chaque minute, les livraisons arrivées sont retirées de la file et ajoutées à `stock_raw`.
 
@@ -99,7 +94,7 @@ L'observation inclut :
 
 La demande n'est plus ponctuelle, mais modélisée comme un **backlog** (carnet de commandes non servies).
 
-- Une fois par heure (`time % 60 == 0`), on génère une **nouvelle demande horaire** pour P1 et P2 :
+- Une fois par quart d'heure (`time % 15 == 0`), on génère une **nouvelle demande horaire** pour P1 et P2 :
   - la demande dépend de l'heure de la journée (**profil jour/nuit**),
   - elle suit une loi de Poisson agrégée sur 60 minutes.
 
@@ -130,7 +125,7 @@ La demande visible par l'agent dans l'état est donc **la demande résiduelle** 
 
 ### 4.5 Vol nocturne
 
-Toutes les **1440 minutes** (fin de journée) :
+Toutes les **1440 minutes** (fin de journée a 11:55pm) :
 
 ```python
 stock_p1 = floor(stock_p1 * 0.9)
@@ -197,8 +192,7 @@ Le reward par step peut inclure :
   - `+ 20 * ventes_p2`
 - **coût des commandes de MP** :
   - `− q` lors d’une action de commande
-- aucune pénalité explicite sur le backlog dans la version de base
-  - mais une pénalisation du backlog peut être ajoutée plus tard si nécessaire.
+- pénalité explicite appliquee sur le backlog 
 
 ---
 
@@ -222,10 +216,32 @@ Il est recommandé :
 
 ---
 
-## 9. Référence principale
 
-Pour plus de détails, toutes les règles sont décrites dans :
 
-- `workshop_environment_specification_DQN_BACKLOG_FINAL.md`
 
-Ce README a pour but de donner une **vue synthétique et opérationnelle** de l’environnement pour le travail de RL (DQN et variantes).
+
+## 9. Vérification complète de l’environnement avec le notebook `Workshop_Test`
+
+L’ensemble des tests décrits ci-dessous provient du fichier : Workshop_Test.py. Ils valident toutes les dynamiques essentielles de l’environnement, de la production aux livraisons, en passant par les ventes, le backlog et le vol nocturne.
+
+### 9.1 Production P1 (k = 3)
+Vérification du fonctionnement de M1 avec un batch de taille 3, durée correcte (3×k), mise à jour du stock et progression temporelle valide.
+
+### 9.2 Production P2 (STEP1 → STEP2)
+Contrôle du flux complet P2 : STEP1 sur M1 puis STEP2 sur M2, consommations et productions correctes, cohérence des états machines.
+
+### 9.3 Production P2 multiple (k = 3)
+Validation de la cohérence temporelle et du flux matière pour un batch plus large (k=3).
+
+### 9.4 Vol nocturne
+Test du mécanisme de réduction des stocks de P1 et P2 à t mod 1440 = 1435, sans impact sur MP ou P2_inter.
+
+### 9.5 Livraisons multiples avec jitter
+Tests de commandes successives de MP : délais 120±2, FIFO respectée, aucune livraison écrasée.
+
+### 9.6 Livraison + vente simultanée
+Cas critique : livraison tombant exactement à une heure pleine (t=120). Vérification que la vente ne touche jamais au stock MP, cohérence backlog/ventes.
+
+### 9.7 Livraison + vente + vol nocturne
+Superposition des événements critiques proches de minuit : livraisons, vente (t=1440), vol (t=1435). Aucune interaction indésirable.
+
