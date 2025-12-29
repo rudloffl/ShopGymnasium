@@ -19,6 +19,13 @@ class ShopEnv(gym.Env):
 
         self.forced_stop = np.zeros((self.product_count, self.machine_count))
         
+        self.order_log = []
+        self.sales_log = []
+        self.cash_flow = []
+        self.stealing_log = []
+        self.stock_utilization = []
+        self.maq_utilization = []
+
         self.prod_assignment = np.zeros((self.product_count, self.machine_count))
         # Prod A only needs machine 1 for 6 unit of time (in minutes)
         self.prod_assignment[0, 0] = 6
@@ -239,6 +246,14 @@ class ShopEnv(gym.Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
+
+        self.order_log = []
+        self.sales_log = []
+        self.cash_flow = []
+        self.stock_utilization = []
+        self.stealing_log = []
+        self.maq_utilization = []
+
         self._make_simpy_env()
         observation = self._get_obs()
         info = self._get_info()
@@ -297,14 +312,18 @@ class ShopEnv(gym.Env):
         self.salesrewards = 0
         self.poormanagementpenality = 0
         
+        self.record_log_step()
+
         observation = self._get_obs()
         info = self._get_info()
         
+
         return observation, reward, terminated, truncated, info
 
     def order_raw_product(self, qty):
         qty = int(qty)
         self.pending_raw += qty
+        self.order_log.append((self.shopsim.now, qty))
         yield self.shopsim.timeout(1)
         roominstock = min(self.stockraw.capacity - self.stockraw.level, qty)
         if (roominstock > 0) and (roominstock <= self.stockraw.capacity):
@@ -316,19 +335,28 @@ class ShopEnv(gym.Env):
         while True:
             if self.shopsim.now % day_hour > day_hour / 2:
                 # Filter Stores
+                stolen = 0
                 for stock in (self.stockint, self.stocksell):
                     if len(stock.items) > threshold_stock:
                         at_risk = (np.random.random(len(stock.items) - threshold_stock) < probability).astype(int)
+                        
                         for product_index in at_risk:
                             if product_index == 1:
+                                stolen += 1
                                 yield stock.get()
-                # Containers 
+                if stolen != 0:
+                    self.stealing_log.append((self.shopsim.now, 'products', -stolen))
+                # Containers
+                stolen = 0
                 for stock in (self.stockraw,):
                     if stock.level > threshold_stock:
                         at_risk = (np.random.random(int(stock.level) - threshold_stock) < probability).astype(int)
                         for product_index in at_risk:
                             if product_index == 1:
+                                stolen += 1
                                 yield stock.get(1)
+                if stolen != 0:
+                    self.stealing_log.append((self.shopsim.now, 'rawproducts', -stolen))
             yield self.shopsim.timeout(self.step_size)
 
     def make_products(self, machine_j=0, prod_i=0, patience=60):
@@ -351,6 +379,7 @@ class ShopEnv(gym.Env):
             # Wait for both resources to be available
             yield op_req
             yield machine_req
+            start = self.shopsim.now
             while self.current_batch[prod_i, machine_j] != 0:
                 if self.forced_stop[prod_i, machine_j] == 1:
                     # We stop what we were doing immediately
@@ -373,6 +402,8 @@ class ShopEnv(gym.Env):
                     yield self.shopsim.timeout(cycletime / 60)
                 else:
                     break
+            end = self.shopsim.now
+            self.maq_utilization.append((start, end, prod_i, f'machine_{machine_j}'))
 
     def get_operators_to_work(self):
         while True:
@@ -396,16 +427,33 @@ class ShopEnv(gym.Env):
     def sell_products(self, freq=1):
         while True:
             if self.shopsim.now % freq == 0:
+                stepreward = 0
                 allprods = [x for x in self.stocksell.items]
                 for prod in allprods:
                     sold = yield self.stocksell.get(lambda x: x == prod)
                     self.sell_log[int(prod)] += 1
                     self.salesrewards += self.prod_dict.get(prod)['Cost']
+                    stepreward += self.prod_dict.get(prod)['Cost']
+
+                self.sales_log.append((self.shopsim.now, stepreward))
             yield self.shopsim.timeout(self.step_size)
 
+    def record_log_step(self):
+
+        self.stock_utilization.append((self.shopsim.now, 'Stockint', len(self.stockint.items)))
+        self.stock_utilization.append((self.shopsim.now, 'stocksell', len(self.stocksell.items)))
+        self.stock_utilization.append((self.shopsim.now, 'stockraw', self.stockraw.level))
+
+    def render(self):
+        return {'order_log': self.order_log,
+                # 'cash_flow': self.cash_flow,
+                'sales_log': self.sales_log,
+                'stock_utilization': self.stock_utilization,
+                'stealing_log': self.stealing_log,
+                'maq_utilization': self.maq_utilization}
 
 if __name__ == "__main__":
-    env = ShopEnv(duration_max=1)
+    env = ShopEnv(duration_max=1/24)
     observation, info = env.reset()
     print("Initial observation keys:", observation.keys())
     print(f"Action space shape: {env.action_space.shape}")
@@ -505,3 +553,5 @@ if __name__ == "__main__":
     print(f'Average Reward per Step: {sum(rewards)/step_count:.2f}')
     print(f'Final Production Log:\n{info["production_log"]}')
     print(f'Final Sell Log: {info["sell_log"]}')
+
+    print(env.render())

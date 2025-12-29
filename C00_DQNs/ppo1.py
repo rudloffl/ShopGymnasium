@@ -14,7 +14,10 @@ from pathlib import Path
 import sys
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+import matplotlib.colors as mcolors
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
@@ -169,8 +172,58 @@ def evaluate_ppo(
             episode_reward += reward
             episode_length += 1
             
-            if render:
-                env.render()
+        if render:
+            logs = env.render()
+            fig, ax = plt.subplots(4, 1, figsize=(12, 20))
+
+            # Machine Gantt
+            maqgantt = pd.DataFrame(logs['maq_utilization'], columns=['start', 'end', 'product', 'machine'])
+            machines = sorted(maqgantt['machine'].unique())
+            products = maqgantt['product'].unique()
+            colors = list(mcolors.TABLEAU_COLORS.values())
+            if len(products) > len(colors):
+                colors = plt.cm.tab20(np.linspace(0, 1, len(products)))
+            product_colors = dict(zip(products, colors))
+            for idx, row in maqgantt.iterrows():
+                machine_idx = machines.index(row['machine'])
+                duration = row['end'] - row['start']
+                
+                ax[0].barh(machine_idx, duration, left=row['start'], 
+                        height=0.6, 
+                        color=product_colors[row['product']],
+                        edgecolor='black',
+                        linewidth=0.5,
+                        alpha=0.8)
+            legend_elements = [Rectangle((0, 0), 1, 1, fc=product_colors[prod], 
+                             edgecolor='black', label=prod) 
+                  for prod in products]
+            ax[0].legend(handles=legend_elements, title='Product', 
+                loc='upper right', bbox_to_anchor=(1.12, 1))
+            ax[0].set_yticks(range(len(machines)))
+            ax[0].set_yticklabels(machines)
+            ax[0].set_title('Machine Utilization Gantt Chart')
+
+            # Sales
+            sales = pd.DataFrame(logs['sales_log'], columns=['ts', 'reward']).set_index('ts')
+            sales['reward'].plot(kind='bar', ax=ax[1])
+            ax[1].set_title('Sales')
+
+            # Orders
+            sales = pd.DataFrame(logs['order_log'], columns=['ts', 'raw_orders']).set_index('ts')
+            sales['raw_orders'].plot(kind='bar', ax=ax[3])
+            ax[3].set_title('Raw Product Orders')
+
+            # Stocks
+            stocks = pd.DataFrame(logs['stock_utilization'], columns=['ts', 'stockarea', 'qty']).set_index('ts')
+            for stockname in stocks['stockarea'].unique():
+                df = stocks[stocks['stockarea'] == stockname]
+                df.rename({'qty': stockname}, axis='columns')[stockname].plot(ax=ax[2])
+            ax[2].legend()
+            ax[2].set_title('Stock Levels')
+
+            plt.tight_layout()
+
+            plt.savefig(f'episode_{episode}.png', transparent=True)
         
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
@@ -203,7 +256,7 @@ def evaluate_ppo(
 def plot_evaluation_results(episode_rewards: list, episode_lengths: list, save_path: str = None):
     """Plot evaluation results"""
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    fig, ax1 = plt.subplots(1, 1, figsize=(12, 4))
     
     # Plot rewards
     ax1.plot(episode_rewards, marker='o')
@@ -213,15 +266,6 @@ def plot_evaluation_results(episode_rewards: list, episode_lengths: list, save_p
     ax1.set_title('Episode Rewards')
     ax1.legend()
     ax1.grid(True)
-    
-    # Plot lengths
-    ax2.plot(episode_lengths, marker='o', color='orange')
-    ax2.axhline(y=np.mean(episode_lengths), color='r', linestyle='--', label='Mean')
-    ax2.set_xlabel('Episode')
-    ax2.set_ylabel('Episode Length')
-    ax2.set_title('Episode Lengths')
-    ax2.legend()
-    ax2.grid(True)
     
     plt.tight_layout()
     
@@ -234,7 +278,7 @@ def plot_evaluation_results(episode_rewards: list, episode_lengths: list, save_p
 
 if __name__ == "__main__":
     # Configuration
-    TRAIN = True  # Set to False to only evaluate
+    TRAIN = False  # Set to False to only evaluate
     TOTAL_TIMESTEPS = 750_000
     MODEL_PATH = "./ppo_shopenv/best_model"
     
@@ -258,8 +302,8 @@ if __name__ == "__main__":
         # Only evaluate existing model
         results, rewards, lengths = evaluate_ppo(
             model_path=MODEL_PATH,
-            n_episodes=20,
-            render=False
+            n_episodes=2,
+            render=True
         )
     
     # Plot results
