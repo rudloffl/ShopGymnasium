@@ -30,12 +30,12 @@ class ShopEnv(gym.Env):
         # Prod A only needs machine 1 for 6 unit of time (in minutes)
         self.prod_assignment[0, 0] = 6
         self.prod_assignment[0, 1] = 0
-        # Prod B needs machine 1 for 15 unit of time, and 20 for machine 2 (in minutes)
+        # Prod B needs machine 1 for 15 unit of time, and 5 for machine 2 (in minutes)
         self.prod_assignment[1, 0] = 15
-        self.prod_assignment[1, 1] = 20
+        self.prod_assignment[1, 1] = 5
         self.duration_max = duration_max
 
-        self.prod_dict = {'0': {'Name': 'A', 'Cost': 3},
+        self.prod_dict = {'0': {'Name': 'A', 'Cost': 20},
                           '1': {'Name': 'B', 'Cost': 20},
                           }
 
@@ -108,9 +108,8 @@ class ShopEnv(gym.Env):
                            self.action_dim_ranking + 
                            self.action_dim_order)
         
-        # All actions normalized to 0-1 range
         self.action_space = gym.spaces.Box(
-            low=0.0, 
+            low=-1.0, 
             high=1.0, 
             shape=(total_action_dim,), 
             dtype=np.float32
@@ -300,7 +299,7 @@ class ShopEnv(gym.Env):
         # We order raw product
         if order_raw_prod > 0:
             self.shopsim.process(self.order_raw_product(int(order_raw_prod)))
-            reward = reward - int(order_raw_prod) * 1
+            #reward = reward - int(order_raw_prod) * 1
         
         # Execute the Simpy
         self.now_sim += self.step_size
@@ -317,6 +316,8 @@ class ShopEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
         
+        if self.pending_raw < 0:
+            reward += 1
 
         return observation, reward, terminated, truncated, info
 
@@ -424,7 +425,7 @@ class ShopEnv(gym.Env):
                 
             yield self.shopsim.timeout(self.step_size / 60)
 
-    def sell_products(self, freq=1):
+    def sell_products(self, freq=3):
         while True:
             if self.shopsim.now % freq == 0:
                 stepreward = 0

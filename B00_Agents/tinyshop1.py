@@ -153,25 +153,27 @@ class ShopEnv(gym.Env):
     
     
     def _get_obs(self):
-        return {"stockraw_used": float(self.stockraw.level),
-                "stockraw_free": float(self.stockraw.capacity - self.stockraw.level),
-                "stockint_used": float(len(self.stockint.items)),
-                "stockint_free": float(self.stockint.capacity - len(self.stockint.items)),
-                "stock2sell_used": float(len(self.stocksell.items)),
-                "stock2sell_free": float(self.stocksell.capacity - len(self.stocksell.items)),
-                
-                "current_batch_remaining": self.current_batch,
-                "next_batch" : self.next_batch,
-                "ranking_next": self.ranking_next,
-                
-                "count_operators_busy": float(self.operators.count),
-                "count_operators_free": float(self.operators.capacity-self.operators.count),
-                "prod_assignment": self.prod_assignment,
-                "pending_reception": float(self.pending_raw),
-
-                "timeday": float(self.shopsim.now % 24)
-                
-               }
+        return {
+            "stockraw_used": np.array([self.stockraw.level], dtype=np.float32),
+            "stockraw_free": np.array([self.stockraw.capacity - self.stockraw.level], dtype=np.float32),
+            "stockint_used": np.array([len(self.stockint.items)], dtype=np.float32),
+            "stockint_free": np.array([self.stockint.capacity - len(self.stockint.items)], dtype=np.float32),
+            "stock2sell_used": np.array([len(self.stocksell.items)], dtype=np.float32),
+            "stock2sell_free": np.array([self.stocksell.capacity - len(self.stocksell.items)], dtype=np.float32),
+            
+            "current_batch_remaining": self.current_batch.astype(np.float32),
+            "next_batch": self.next_batch.astype(np.float32),
+            "ranking_next": self.ranking_next.astype(np.float32),
+            
+            "count_operators_busy": np.array([self.operators.count], dtype=np.float32),
+            "count_operators_free": np.array([self.operators.capacity - self.operators.count], dtype=np.float32),
+            
+            "prod_assignment": self.prod_assignment.astype(np.float32),
+            
+            "pending_reception": np.array([self.pending_raw], dtype=np.float32),
+            
+            "timeday": np.array([self.shopsim.now % 24], dtype=np.float32)
+        }
 
     def _get_info(self):
         # Only for debugging purpose
@@ -318,26 +320,33 @@ class ShopEnv(gym.Env):
         reward = 0
         truncated = False
         terminated = True if self.shopsim.now == int(self.duration_max*24) else False
-        for i, j in np.ndindex(action.force_current_batch.shape):
-            if action.force_current_batch[i,j]==1:
+
+        current_batch = action['current_batch']
+        force_current_batch = action['force_current_batch']
+        next_batch = action['next_batch']
+        ranking_next = action['ranking_next']
+        order_raw_prod = action['order_raw_prod']
+
+        for i, j in np.ndindex(force_current_batch.shape):
+            if force_current_batch[i,j]==1:
                 self.forced_stop[i,j] = 1
-                self.current_batch[i,j] = int(action.current_batch[i,j])
+                self.current_batch[i,j] = int(current_batch[i,j])
                 reward -= 5
 
         # We set what should be done next and with what urgency
-        for i, j in np.ndindex(action.next_batch.shape):
-            if (self.prod_assignment[i, j] == 0) and (action.next_batch[i, j] != 0):
+        for i, j in np.ndindex(next_batch.shape):
+            if (self.prod_assignment[i, j] == 0) and (next_batch[i, j] != 0):
                 # Cant assign something when not planned too
                 reward -= 50
                 continue
             if self.prod_assignment[i, j] > 0:
-                self.next_batch[i, j] = int(action.next_batch[i, j])
-                self.ranking_next[i, j] = action.ranking_next[i, j]
+                self.next_batch[i, j] = int(next_batch[i, j])
+                self.ranking_next[i, j] = ranking_next[i, j]
 
         # We order raw product
-        if action.order_raw_prod > 0:
-            self.shopsim.process(self.order_raw_product(int(action.order_raw_prod)))
-            reward = reward - int(action.order_raw_prod) * 1
+        if order_raw_prod > 0:
+            self.shopsim.process(self.order_raw_product(int(order_raw_prod)))
+            reward = reward - int(order_raw_prod) * 1
 
         # Execute the Simpy
         self.now_sim += self.step_size
