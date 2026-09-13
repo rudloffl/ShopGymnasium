@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+.virtual_documents/
+
+# Anaconda project metadata (local filebrowser db, not source)
+anaconda_projects/
+
+# Trained model checkpoints (large binaries, not source)
+*.zip
