@@ -37,6 +37,23 @@ and station breakdowns. With these placeholder numbers the plant is easy for the
 there's little headroom for RL. Calibration with real data will decide how hard the problem really
 is.
 
+## Next session: first tests on the GPU machine
+
+Planned by the user. Run in order, record results in "Training runs" and the session log:
+
+1. `git pull`, then set up the env: CUDA `torch` build, `pip install -r requirements.txt`. Check
+   `nvidia-smi`, `python -c "import torch; print(torch.cuda.is_available())"`, and `nproc`.
+2. `python -m unittest discover tests` must pass.
+3. `python -m D00_Plant.evaluate --episodes 2`: compare the numbers with the baselines table
+   above. Same seeds should give the same KPIs on any machine.
+4. Speed check: `python -m E00_MAPPO.train --run gpu_speed --iterations 5 --envs <nproc>` on
+   `--device cuda`, then again on `--device cpu`. Note seconds per iteration for each. The
+   simulation is expected to dominate, so choose `--envs` from the CPU core count.
+5. First real run, e.g. `--run gpu1 --iterations 1000 --envs <nproc> --hours 24`. Track
+   `eval_reward` vs `cover_baseline` in `runs/gpu1/metrics.csv`.
+6. Optional: `python -m F00_Dash.app` there to view a trained policy (choose `trained: gpu1` in the
+   policy list).
+
 ## Next steps
 
 1. Get real plant data from the user to replace placeholders: product mix, cycle times,
@@ -74,6 +91,9 @@ Record every run that matters here, because `runs/` is not pushed.
   (machine context + attention over the other machines + shop context → GRU/LSTM), one team
   reward, a centralised critic, and PPO clipping per machine. It was chosen so one model can run
   plants of any size.
+- 2026-09-27: The Dash app is a single file with plain Dash and Plotly. Gantt charts come from
+  activity intervals recorded by the sim (`Plant.timeline`), not from parsing the event log. The
+  user-facing labels use generic terms only.
 
 ## Session log
 
