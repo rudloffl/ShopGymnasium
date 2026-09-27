@@ -19,24 +19,46 @@ observation and action spaces, and the reward.
 - `A00 - Notebooks/` holds the original exploration notebook (the directory name has spaces, so
   quote the path).
 
+## Working across machines
+
+The code is written on one machine and trained on another one that has a GPU. GitHub
+(`git@github.com:rudloffl/ShopGymnasium.git`, branch `main`) is the only link between them.
+Claude's local memory (`~/.claude`) does **not** travel, so anything a later session needs must be
+written into the repo.
+
+- **At session start:** `git pull`, then read `PROGRESS.md` (current state, next steps, past
+  training runs, decisions).
+- **Before the session ends:** update `PROGRESS.md` (session log entry with date and machine, new
+  next steps, and a row in the training-runs table for any run that matters). Commit it together
+  with the code, and offer to push. Push only when the user confirms.
+- Checkpoints, TensorBoard logs and plots are gitignored and stay on the machine that made them.
+  Write the numbers that matter into `PROGRESS.md`. Only commit a specific model if the user asks.
+- Standing preferences from the user belong in this file, not in local memory.
+- Don't assume paths, conda env names, or hardware. Check `python --version`,
+  `nvidia-smi`, and `torch.cuda.is_available()` when it matters.
+
 ## Environment & commands
 
-- Python via conda env `deeprl1` (gymnasium 1.2.2, simpy 4.1.1, torch 2.9 CPU). As of 2026-09,
-  `stable_baselines3` is **not installed** in any local env, so `ppo2.py` needs
-  `pip install stable-baselines3[extra] pandas matplotlib tensorboard` first.
+- Setup on any machine: create a Python 3.11+ env (conda or venv). Install the right `torch` build
+  for the machine (CUDA on the GPU box, see pytorch.org), then `pip install -r requirements.txt`.
+  - Dev machine (as of 2026-09): conda env `deeprl1`, Python 3.14, torch CPU. SB3 not yet installed.
+- GPU note: SB3 PPO with a small MLP policy is often as fast on CPU as on GPU, and SB3 warns about
+  this. Most of the time goes into SimPy stepping. For wall-clock speed, parallel envs
+  (`SubprocVecEnv` / `make_vec_env`) help more than the GPU. Measure before assuming.
 - Run scripts from the repo root. `ppo2.py` adds the root to `sys.path` and imports
   `from B00_Agents.tinyshop3 import ShopEnv`.
 - Train/eval: `python C00_DQNs/ppo2.py` (the `TRAIN` flag is at the bottom of the file).
 - Smoke test without SB3:
   ```bash
-  ~/miniconda3/envs/deeprl1/bin/python -c "
+  python -c "
   from B00_Agents.tinyshop3 import ShopEnv
   env=ShopEnv(); o,_=env.reset(); d=False; R=0
   while not d:
       o,r,t,tr,_=env.step(env.action_space.sample()); R+=r; d=t or tr
   print(R)"
   ```
-- No tests, no linter, no packaging (`requirements.txt`/`pyproject.toml`) yet.
+- No tests, no linter, no packaging yet. Dependencies are in `requirements.txt`. Keep it updated
+  when adding an import.
 - Generated artifacts (`ppo_shopenv/`, `logs/`, `*.zip`, `episode_*.png`) are gitignored. Don't
   commit them.
 
@@ -60,7 +82,7 @@ observation and action spaces, and the reward.
   requires SB3's `MultiInputPolicy`.
 - `render()` returns a dict of event logs. Plotting happens in `ppo2.evaluate_ppo(render=True)`.
 
-## Known issues in tinyshop3 (found while reading; not yet fixed)
+## Known issues in tinyshop3 (found while reading; not yet fixed; remove items as they get fixed)
 
 - The observation shapes use `product_count + machine_count` where they should use
   `product_count * machine_count`. This only works because 2+2 == 2×2.

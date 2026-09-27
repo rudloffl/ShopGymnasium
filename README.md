@@ -53,10 +53,15 @@ projet_atelier_fab/                    separate contributor's project, not part 
 
 ## Setup
 
+Use Python 3.11+. Install the `torch` build for your hardware first (CUDA or CPU, see
+[pytorch.org](https://pytorch.org/get-started/locally/)), then:
+
 ```bash
-conda activate deeprl1   # has gymnasium, simpy, torch
-pip install stable-baselines3[extra] pandas matplotlib tensorboard
+pip install -r requirements.txt
 ```
+
+Development and training happen on different machines and are kept in sync through GitHub. See
+`PROGRESS.md` for the current state, the next steps, and past training runs.
 
 ## Usage
 

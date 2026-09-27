@@ -1,0 +1,9 @@
+# Install torch first with the build matching the machine (CUDA or CPU), see https://pytorch.org
+torch>=2.8
+gymnasium>=1.2
+simpy>=4.1
+numpy>=2.0
+stable-baselines3[extra]>=2.7
+pandas
+matplotlib
+tensorboard
