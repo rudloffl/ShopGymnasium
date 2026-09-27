@@ -7,3 +7,5 @@ stable-baselines3[extra]>=2.7
 pandas
 matplotlib
 tensorboard
+dash>=3
+plotly>=6

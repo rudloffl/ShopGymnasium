@@ -22,11 +22,11 @@ revealing, use a generic one.
 
 - **Ignore `projet_atelier_fab/`.** It belongs to another contributor (merged from a fork). Don't
   read it, edit it, or use it as a reference.
-- **Current code:** `D00_Plant/` (plant model, env, baselines, event log) and `E00_MAPPO/` (model,
-  training).
+- **Current code:** `D00_Plant/` (plant model, env, baselines, event log), `E00_MAPPO/` (model,
+  training) and `F00_Dash/` (setup & simulation app).
 - **Legacy (kept for history, don't edit unless asked):** `B00_Agents/tinyshop*.py` and
   `C00_DQNs/ppo*.py` (the first 2-machine toy shop with SB3 PPO), and `A00 - Notebooks/` (quote the
-  path, it has spaces). New major steps get a new `X00_` folder (next: `F00_Dash/`).
+  path, it has spaces). New major steps get a new `X00_` folder.
 
 ## Working across machines
 
@@ -58,6 +58,8 @@ written into the repo.
   - Training: `python -m E00_MAPPO.train --run <name> --iterations 200 --envs 16 --hours 24`
     writes `runs/<name>/metrics.csv`, `model.pt`, `best.pt`, `plant.json`
   - Regenerate the default plant JSON: `python -m D00_Plant.config`
+  - Dash app: `python -m F00_Dash.app` → http://127.0.0.1:8050 (saves plants to `D00_Plant/configs/`,
+    writes the last event log to `runs/dash/events.csv`)
 - Speed: the simulation, not the network, is the bottleneck (about 0.7 s per simulated 24 h with
   75 machines). Scale with `--envs` (one process per env). The GPU mostly helps the update phase.
 
@@ -101,6 +103,22 @@ written into the repo.
   mid-sequence. GAE is computed on the team reward. PPO ratio and clipping are per machine, with
   the same team advantage broadcast to every machine. The deterministic eval reward is compared
   with the `cover` heuristic (`cover_baseline` column).
+
+## Dash app (F00_Dash/app.py)
+
+- One file, plain Dash + Plotly (no pandas, no bootstrap). The left panel edits a plant config:
+  finishing stations, stage 1/2 machines, operators, buffers, products. Prep and reward settings
+  are not in the form and are kept from the loaded file (`base-config` store).
+- `form_to_config` validates the form and rescales station shares to 100 %. `capacity_summary`
+  gives a quick bottleneck estimate before simulating.
+- "Run simulation" runs one episode with a baseline or a trained `runs/*/best.pt` policy. It shows
+  KPI cards, Gantt charts for stations, machines and operators, and buffer levels.
+- The Gantt charts come from `Plant.timeline` (activity intervals, recorded only when the event
+  log is on; call `close_timeline()` before reading). Buffer curves come from `Plant.samples`
+  (every 10 min).
+- To check the UI visually without a browser session:
+  `google-chrome --headless=new --screenshot=out.png --window-size=1600,1100 --virtual-time-budget=8000 http://127.0.0.1:8050/`,
+  or write a figure to HTML (`fig.write_html`) and screenshot that.
 
 ## Conventions
 

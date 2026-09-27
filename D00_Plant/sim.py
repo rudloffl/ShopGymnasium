@@ -128,6 +128,13 @@ class Plant:
         self.finished = np.zeros(self.n_products, dtype=int)   # cumulative
         self.changeovers = 0                                    # cumulative
 
+        # Activity intervals for Gantt charts, recorded only when the event log is on:
+        # (entity, start, end, state, product, detail)
+        self.timeline = [] if self.log.enabled else None
+        self._open = {}
+        # Buffer levels sampled every `sample_every` minutes: (t, stage1 levels, stage2 levels)
+        self.samples = []
+
         self._init_state()
         for m in self.machines:
             self.env.process(self._machine_proc(m))
@@ -135,6 +142,8 @@ class Plant:
             self.env.process(self._operator_proc(op))
         for s in self.stations:
             self.env.process(self._station_proc(s))
+        if self.timeline is not None:
+            self.env.process(self._sampler_proc(10.0))
 
     # ------------------------------------------------------------------ setup
     def _station_products(self):
@@ -189,6 +198,37 @@ class Plant:
         now = self.env.now
         e.status_time[e.status] += now - e.status_since
         e.status, e.status_since = status, now
+        if self.timeline is not None:
+            product = e.target if status == CHANGEOVER else e.product
+            detail = e.operator.name if isinstance(e, Machine) and e.operator is not None else ''
+            self._track(e.name, STATUS_NAMES[status], self._pname(product), detail)
+
+    def _set_op_state(self, op, state, m=None):
+        op.status = state
+        if self.timeline is not None:
+            self._track(op.name, state, self._pname(m.target) if m else '', m.name if m else '')
+
+    def _track(self, name, state, product, detail):
+        now = self.env.now
+        cur = self._open.get(name)
+        if cur is not None and cur[1:] == (state, product, detail):
+            return
+        if cur is not None and now > cur[0]:
+            self.timeline.append((name, cur[0], now) + cur[1:])
+        self._open[name] = (now, state, product, detail)
+
+    def close_timeline(self):
+        """Close the intervals still open at the current time (call before reading `timeline`)."""
+        now = self.env.now
+        for name, cur in self._open.items():
+            if now > cur[0]:
+                self.timeline.append((name, cur[0], now) + cur[1:])
+        self._open = {name: (now,) + cur[1:] for name, cur in self._open.items()}
+
+    def _sampler_proc(self, every):
+        while True:
+            self.samples.append((self.env.now, self.inter.level.copy(), self.assembled.level.copy()))
+            yield self.env.timeout(every)
 
     def _wake(self, m):
         if m.wake is not None and not m.wake.triggered:
@@ -278,17 +318,18 @@ class Plant:
                 if m is None:
                     if op.status != 'idle':
                         self.log(env.now, 'op_idle', op.name)
-                    op.status = 'idle'
+                    self._set_op_state(op, 'idle')
                     yield env.any_of([self._dispatch_ev, env.timeout(ocfg.recheck)])
                     continue
                 m.claimed = op
-                op.status = 'travel'
+                self._set_op_state(op, 'travel', m)
                 self.log(env.now, 'op_dispatch', op.name, self._pname(m.target), 0, m.name)
                 yield env.timeout(ocfg.travel_time)
                 m.claimed = None
                 if m.broken or m.target is None or m.operator is not None:
                     continue   # task vanished while walking
-                m.operator, op.machine, op.status = op, m, 'work'
+                m.operator, op.machine = op, m
+                self._set_op_state(op, 'work', m)
                 self.log(env.now, 'op_arrive', op.name, self._pname(m.target), 0, m.name)
                 self._wake(m)
             op.wake = env.event()
@@ -297,7 +338,8 @@ class Plant:
     def _release(self, m, reason):
         op = m.operator
         m.operator, m.release = None, False
-        op.machine, op.status = None, 'idle'
+        op.machine = None
+        self._set_op_state(op, 'idle')
         self.log(self.env.now, 'op_release', op.name, self._pname(m.product), 0, f'{m.name}: {reason}')
         if op.wake is not None and not op.wake.triggered:
             op.wake.succeed()

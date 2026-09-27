@@ -46,6 +46,7 @@ moves, changeovers, prep deliveries, breakdowns, and finishing loads. Use
 ```
 D00_Plant/        plant simulation (sim.py), gym env (env.py), config, event log, baseline policies
 E00_MAPPO/        shared machine policy (model.py) and multi-agent PPO training (train.py)
+F00_Dash/         Dash app: plant setup, simulation, Gantt charts
 tests/            unit tests for the plant
 runs/             training outputs (gitignored)
 PROGRESS.md       current state, next steps, training results, decisions
@@ -68,7 +69,13 @@ python -m unittest discover tests                                   # tests
 python -m D00_Plant.evaluate --policy cover random idle --episodes 3  # baseline KPIs
 python -m D00_Plant.evaluate --policy cover --episodes 1 --events runs/events.csv
 python -m E00_MAPPO.train --run first --iterations 200 --envs 16      # training
+python -m F00_Dash.app                                               # setup & simulation app, http://127.0.0.1:8050
 ```
+
+The Dash app lets you set up a plant (finishing stations, stage 1 and stage 2 machines,
+operators, buffers, products) and save it as JSON. It then runs a simulated episode with a baseline
+or trained policy and shows KPIs, Gantt charts of station, machine and operator activity, buffer
+levels, and a downloadable event log.
 
 Training writes `runs/<run>/metrics.csv`, `model.pt`, `best.pt` and a copy of the plant config.
 

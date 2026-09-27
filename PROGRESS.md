@@ -17,6 +17,10 @@ several plants without retraining.
   baseline policies. 6 unit tests pass.
 - `E00_MAPPO/`: shared per-machine policy (attention + GRU/LSTM, centralised critic) and a
   multi-agent PPO training loop. It runs end to end, but hasn't been tuned.
+- `F00_Dash/`: plant setup app (stations, stage 1/2 machines, operators, buffers, products;
+  save/load JSON), one-episode simulation with any policy, KPI cards, Gantt charts (stations,
+  machines, operators), buffer levels, event log download. Training can't be launched from the
+  app yet.
 - All plant numbers are **placeholders** (`D00_Plant/configs/default.json`).
 - Legacy toy shop (`B00_Agents`, `C00_DQNs`) is frozen. Its known bugs were not fixed.
 
@@ -43,8 +47,8 @@ is.
    is a warm start by imitating `cover` (behaviour cloning). Other ideas if it stalls:
    - local reward shaping per machine;
    - a smaller action space (drop priority, or add a "keep current plan" action).
-3. `F00_Dash/`: plant setup form (edits the JSON config), launch and monitor training (reads
-   `runs/<run>/metrics.csv`), and a results view (Gantt, buffers, starvation from the event log).
+3. Dash app, next parts: launch and monitor training from the app (background process, reads
+   `runs/<run>/metrics.csv`); prep settings once they matter; compare two policies side by side.
 4. Generalisation: randomise plant configs during training (machine and product counts, times),
    then test on unseen plants.
 
@@ -75,4 +79,5 @@ Record every run that matters here, because `runs/` is not pushed.
 
 - 2026-09-26 (dev machine): README, CLAUDE.md, requirements.txt, this file.
 - 2026-09-27 (dev machine): built D00_Plant (sim, env, event log, baselines, tests) and E00_MAPPO
-  (model, training). Short check run on CPU, see training runs.
+  (model, training). Short check run on CPU, see training runs. Then started F00_Dash (setup +
+  simulation + Gantt charts).
