@@ -1,0 +1,102 @@
+{
+  "products": [
+    {
+      "name": "P1",
+      "stage1_time": 4.0,
+      "stage2_time": 2.0,
+      "finish_time": 20.0,
+      "finish_share": 0.25
+    },
+    {
+      "name": "P2",
+      "stage1_time": 4.5,
+      "stage2_time": 2.2,
+      "finish_time": 22.0,
+      "finish_share": 0.2
+    },
+    {
+      "name": "P3",
+      "stage1_time": 3.5,
+      "stage2_time": 1.8,
+      "finish_time": 18.0,
+      "finish_share": 0.2
+    },
+    {
+      "name": "P4",
+      "stage1_time": 4.2,
+      "stage2_time": 2.0,
+      "finish_time": 20.0,
+      "finish_share": 0.15
+    },
+    {
+      "name": "P5",
+      "stage1_time": 3.8,
+      "stage2_time": 2.1,
+      "finish_time": 19.0,
+      "finish_share": 0.1
+    },
+    {
+      "name": "P6",
+      "stage1_time": 4.4,
+      "stage2_time": 1.9,
+      "finish_time": 21.0,
+      "finish_share": 0.1
+    }
+  ],
+  "stage1": {
+    "n_machines": 50,
+    "n_components": 5,
+    "changeover_time": 15.0,
+    "kit_batch": 30,
+    "reorder_point": 12,
+    "mtbf": 600.0,
+    "mttr": 30.0
+  },
+  "stage2": {
+    "n_machines": 25,
+    "n_components": 3,
+    "changeover_time": 10.0,
+    "kit_batch": 40,
+    "reorder_point": 25,
+    "mtbf": 600.0,
+    "mttr": 30.0
+  },
+  "finishing": {
+    "n_stations": 36,
+    "slots": 2,
+    "n_operators": 6,
+    "load_time": 2.0,
+    "mtbf": 1200.0,
+    "mttr": 45.0
+  },
+  "prep": {
+    "delay_min": 5.0,
+    "delay_mode": 15.0,
+    "delay_max": 45.0,
+    "disruption_prob": 0.05,
+    "disruption_min": 60.0,
+    "disruption_max": 180.0
+  },
+  "operators": {
+    "n_operators": 25,
+    "travel_time": 2.0,
+    "patience": 10.0,
+    "recheck": 5.0
+  },
+  "buffers": {
+    "stage1_capacity": 600,
+    "stage2_capacity": 800,
+    "stage1_init_hours": 2.0,
+    "stage2_init_hours": 3.0
+  },
+  "reward": {
+    "finished": 1.0,
+    "starved": 1.0,
+    "changeover": 0.02
+  },
+  "cycle_cv": 0.1,
+  "decision_interval": 60.0,
+  "episode_hours": 72.0,
+  "n_priorities": 4,
+  "max_products": 8
+}

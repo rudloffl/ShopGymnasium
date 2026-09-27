@@ -4,20 +4,29 @@ Guidance for Claude Code when working in this repository.
 
 ## Project
 
-A Deep RL sandbox. A tiny factory is simulated with SimPy and wrapped as a Gymnasium env
-(`ShopEnv`), then trained with Stable-Baselines3 PPO. See `README.md` for the shop scenario, the
-observation and action spaces, and the reward.
+Deep RL for scheduling a real production plant. The plant is simulated with SimPy
+(`D00_Plant/`), exposed as a Gymnasium env, and controlled by a shared per-machine policy trained
+with multi-agent PPO (`E00_MAPPO/`). A Dash app to set up plants, launch training and view results
+is planned. See `README.md` for the plant model and `PROGRESS.md` for where things stand.
+
+## Confidentiality (hard rule)
+
+The plant models a real industrial process. **Its industry and product are confidential.** Never
+name them or hint at them anywhere: code, comments, docs, commit messages, run names, event logs,
+generated data, or Claude's local memory. Use only the generic vocabulary:
+prep (component supply) → stage 1 → stage-1 buffer → stage 2 → stage-2 (assembled) buffer →
+finishing stations, products `P1..Pn`, components `comp0..`. If you're unsure whether a word is
+revealing, use a generic one.
 
 ## Scope
 
 - **Ignore `projet_atelier_fab/`.** It belongs to another contributor (merged from a fork). Don't
   read it, edit it, or use it as a reference.
-- The current code is `B00_Agents/tinyshop3.py` (env) and `C00_DQNs/ppo2.py` (training).
-  `tinyshop1/2` and `ppo1` are earlier snapshots kept for history. Don't edit them unless asked.
-  The versioning pattern so far: when a change is substantial, copy the file to the next number
-  instead of editing in place.
-- `A00 - Notebooks/` holds the original exploration notebook (the directory name has spaces, so
-  quote the path).
+- **Current code:** `D00_Plant/` (plant model, env, baselines, event log) and `E00_MAPPO/` (model,
+  training).
+- **Legacy (kept for history, don't edit unless asked):** `B00_Agents/tinyshop*.py` and
+  `C00_DQNs/ppo*.py` (the first 2-machine toy shop with SB3 PPO), and `A00 - Notebooks/` (quote the
+  path, it has spaces). New major steps get a new `X00_` folder (next: `F00_Dash/`).
 
 ## Working across machines
 
@@ -31,7 +40,7 @@ written into the repo.
 - **Before the session ends:** update `PROGRESS.md` (session log entry with date and machine, new
   next steps, and a row in the training-runs table for any run that matters). Commit it together
   with the code, and offer to push. Push only when the user confirms.
-- Checkpoints, TensorBoard logs and plots are gitignored and stay on the machine that made them.
+- `runs/` (checkpoints, metrics, event logs) is gitignored and stays on the machine that made it.
   Write the numbers that matter into `PROGRESS.md`. Only commit a specific model if the user asks.
 - Standing preferences from the user belong in this file, not in local memory.
 - Don't assume paths, conda env names, or hardware. Check `python --version`,
@@ -39,70 +48,62 @@ written into the repo.
 
 ## Environment & commands
 
-- Setup on any machine: create a Python 3.11+ env (conda or venv). Install the right `torch` build
-  for the machine (CUDA on the GPU box, see pytorch.org), then `pip install -r requirements.txt`.
-  - Dev machine (as of 2026-09): conda env `deeprl1`, Python 3.14, torch CPU. SB3 not yet installed.
-- GPU note: SB3 PPO with a small MLP policy is often as fast on CPU as on GPU, and SB3 warns about
-  this. Most of the time goes into SimPy stepping. For wall-clock speed, parallel envs
-  (`SubprocVecEnv` / `make_vec_env`) help more than the GPU. Measure before assuming.
-- Run scripts from the repo root. `ppo2.py` adds the root to `sys.path` and imports
-  `from B00_Agents.tinyshop3 import ShopEnv`.
-- Train/eval: `python C00_DQNs/ppo2.py` (the `TRAIN` flag is at the bottom of the file).
-- Smoke test without SB3:
-  ```bash
-  python -c "
-  from B00_Agents.tinyshop3 import ShopEnv
-  env=ShopEnv(); o,_=env.reset(); d=False; R=0
-  while not d:
-      o,r,t,tr,_=env.step(env.action_space.sample()); R+=r; d=t or tr
-  print(R)"
-  ```
-- No tests, no linter, no packaging yet. Dependencies are in `requirements.txt`. Keep it updated
-  when adding an import.
-- Generated artifacts (`ppo_shopenv/`, `logs/`, `*.zip`, `episode_*.png`) are gitignored. Don't
-  commit them.
+- Setup: Python 3.11+ env (conda or venv). Install the right `torch` build for the machine (CUDA on
+  the GPU box, see pytorch.org), then `pip install -r requirements.txt`. Keep `requirements.txt`
+  updated when adding an import.
+  - Dev machine (as of 2026-09): conda env `deeprl1`, Python 3.14, torch CPU. No pandas, no SB3.
+- Everything runs from the repo root as modules:
+  - Tests: `python -m unittest discover tests` (about 1 s)
+  - Baselines + KPIs: `python -m D00_Plant.evaluate --policy cover random idle --episodes 3 [--events runs/events.csv]`
+  - Training: `python -m E00_MAPPO.train --run <name> --iterations 200 --envs 16 --hours 24`
+    writes `runs/<name>/metrics.csv`, `model.pt`, `best.pt`, `plant.json`
+  - Regenerate the default plant JSON: `python -m D00_Plant.config`
+- Speed: the simulation, not the network, is the bottleneck (about 0.7 s per simulated 24 h with
+  75 machines). Scale with `--envs` (one process per env). The GPU mostly helps the update phase.
 
-## How ShopEnv works (tinyshop3)
+## How the plant model works (D00_Plant)
 
-- **Time unit is hours.** `step()` runs the SimPy env until `now + step_size` (1 h). Cycle times
-  in `prod_assignment` are minutes and get converted with `/60`.
-- **Matrices are indexed `[product, machine]`.** `prod_assignment[i, j]` is the cycle time and `0`
-  means product i doesn't use machine j. Routing is currently **hard-coded** in `make_products`
-  (product 1 goes raw → M0 → intermediate stock → M1 → sell). `to_stock_prod` and `to_sell_prod`
-  are defined but unused.
-- The long-running SimPy processes are started in `_make_simpy_env`:
-  `get_operators_to_work` (polls every minute and starts the queued batch with the highest
-  `ranking_next`), `sell_products`, and `steal_product_at_night`. `make_products` holds an operator
-  and a machine for a whole batch, and gives up after 60 min without input.
-- Reward is accumulated through instance attributes that SimPy processes mutate during the hour
-  (`salesrewards`, `poormanagementpenality`, `prod_stolen`). These are reset at the start of each
-  `step()`.
-- Actions come in as a flat vector in [-1, 1] (so PPO can use a single `Box`) and are decoded by
-  `_parse_action` using `action_indices`. Observations are a `Dict` normalised to [0, 1], which
-  requires SB3's `MultiInputPolicy`.
-- `render()` returns a dict of event logs. Plotting happens in `ppo2.evaluate_ppo(render=True)`.
+- **Time unit is the minute.** One env step = `decision_interval` (60 min).
+- `config.py`: dataclass tree ↔ JSON. Every default number is a placeholder until real plant data
+  arrives. `PlantConfig.validate()` checks product shares.
+- `sim.py` (`Plant`), no gym code:
+  - Each building machine runs a process loop: wait for an operator → changeover if the target
+    product changed → wait for inputs (`_wait_inputs`, bounded by operator `patience`) → consume →
+    run → store → maybe break down (failures count operating time only).
+  - `Buffer` holds per-product levels with a shared capacity. An output slot is reserved when a unit
+    starts, so storing never blocks mid-cycle.
+  - Operators: `_pick_task` takes the highest-priority available machine (ties: stage 2 first, then
+    already set up). At each decision `apply_decision` also moves operators from low-priority
+    machines to higher-priority waiting ones, effective after the current unit.
+  - Prep: one delivery process per component type, triangular delay plus random disruptions.
+    Deliveries for a product the machine switched away from are discarded.
+  - Finishing: each station is set up for one product for the whole episode, takes `slots` units
+    per cycle, and needs a finishing operator (`loaders` resource) to load.
+  - All randomness goes through `rng` (the env's `np_random`), so `reset(seed=...)` is reproducible
+    (there's a test).
+- `env.py` (`PlantEnv`): `machines` (M × feature matrix), `shop` (per-product blocks padded to
+  `max_products` + global features), and `product_mask`. The action is `MultiDiscrete` with
+  [product choice (0 = idle), priority] per machine. The reward is finished units normalised by
+  nominal capacity, minus the starved station-time share, minus changeovers.
+- `eventlog.py`: every sim event → `(t, event, entity, product, qty, detail)`. It's off during
+  training (~10^5 rows per 72 h).
+- `policies.py`: `CoverPolicy` (stock-cover heuristic), `RandomPolicy`, `IdlePolicy`. The RL agent
+  must beat `cover`.
+- When changing observation features, update `machine_dim` / `shop_dim` and `_get_obs` together.
+  Checkpoints trained on the old dims become unusable.
 
-## Known issues in tinyshop3 (found while reading; not yet fixed; remove items as they get fixed)
+## How the agent works (E00_MAPPO)
 
-- The observation shapes use `product_count + machine_count` where they should use
-  `product_count * machine_count`. This only works because 2+2 == 2×2.
-- `reset()` doesn't clear `prod_trace`, `prod_log`, `pending_raw`, `current_batch`, `next_batch`,
-  `ranking_next`, or `forced_stop`, so state leaks across episodes.
-- Randomness uses `random` and `np.random` instead of `self.np_random`, so `reset(seed=...)` isn't
-  reproducible.
-- `terminated` is computed before the sim advances, so episodes last 169 steps instead of 168.
-- In `get_operators_to_work`, when the chosen machine is busy the queued batch is zeroed and lost.
-  The block at lines ~437-442 duplicates the assignment above it.
-- `steal_product_at_night` uses `now % 6 > 3`, which is not a real night window.
-- The over-order penalty (`order_qty * 10`) is very large next to sales. Random-policy returns are
-  around −58k per episode.
-- The `__main__` manual-control block still reads removed keys (`stockraw_free`, etc.) and would
-  crash.
-- In `ppo2.py`, `eval_env = ShopEnv()` and the `Monitor` log path are shared with the training env.
+- `MachinePolicy`: the same weights for every machine. Machine encoder + attention over all
+  machines + shop encoder → GRU/LSTM per machine → product head (masked) + priority head.
+  A centralised critic pools the machines. Nothing depends on the machine count.
+- `train.py`: all envs reset together and run full episodes, so the recurrent state never resets
+  mid-sequence. GAE is computed on the team reward. PPO ratio and clipping are per machine, with
+  the same team advantage broadcast to every machine. The deterministic eval reward is compared
+  with the `cover` heuristic (`cover_baseline` column).
 
 ## Conventions
 
-- Match the existing style: plain numpy and SimPy, no extra abstractions, short comments.
+- Match the existing style: plain numpy, SimPy and torch, no extra frameworks, short comments.
   Some comments and commit messages are in French. Either language is fine.
-- When changing the observation or action space, update `_get_obs` / `_parse_action` together with
-  the space definitions, and check with `stable_baselines3.common.env_checker.check_env`.
+- Keep the simulation free of RL code and the env free of torch.

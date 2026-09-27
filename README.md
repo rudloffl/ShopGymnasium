@@ -1,54 +1,55 @@
 # Shop Gymnasium
 
-A small manufacturing shop, simulated with [SimPy](https://simpy.readthedocs.io/) and exposed as a
-[Gymnasium](https://gymnasium.farama.org/) environment. A Deep RL agent (PPO from
-[Stable-Baselines3](https://stable-baselines3.readthedocs.io/)) learns to run the shop: it decides
-what to produce, in which order and batch size, and when to reorder raw material.
+Deep reinforcement learning to schedule a production plant. The plant is a discrete-event
+simulation ([SimPy](https://simpy.readthedocs.io/)) wrapped as a
+[Gymnasium](https://gymnasium.farama.org/) environment. A single policy network, shared by every
+machine, is trained with multi-agent PPO to decide every hour what each machine makes and how
+urgent it is.
 
-## The shop
+## The plant
 
-| Item | Default |
-|---|---|
-| Operators | 2 (shared across machines) |
-| Machines | 2 (`machine_0`, `machine_1`), capacity 1 each |
-| Product A (`'0'`) | 1 step: machine 0 (2 min/unit), sells for 2 |
-| Product B (`'1'`) | 2 steps: machine 0 (4 min/unit) → intermediate stock → machine 1 (5 min/unit), sells for 20 |
-| Raw stock | Container, capacity 100, random initial level. Reorders arrive after 1 h |
-| Intermediate stock | capacity 50 |
-| Sell stock | capacity 50. Everything in it is sold every 5 h |
-| Theft | stock above a threshold of 50 units can be stolen (10 % chance per unit) |
-| Episode | 7 days at 1 decision per simulated hour (168 steps) |
+```
+prep (unlimited, random delays)
+   │ 5 component types            │ 3 component types
+   ▼                              ▼
+stage 1 (50 slow machines) ─► stage-1 buffer ─► stage 2 (25 fast machines) ─► assembled buffer ─► finishing stations
+```
 
-Each decision step advances the SimPy clock by one hour. Inside that hour, operators pick up queued
-batches by priority, machines consume inputs and produce units, and sales and theft happen.
+- **Prep** is an unlimited supply of components. Each component type is delivered to a machine
+  separately, with a random delay and occasional disruptions.
+- **Stage 1** machines build a unit from 5 prep component types.
+- **Stage 2** machines build a unit from 1 stage-1 unit of the same product plus 3 prep component
+  types.
+- **Finishing** stations are each set up for one product. It's the longest step and usually the
+  bottleneck. A separate team of finishing operators loads the stations.
+- **Operators:** 25 operators run the 75 building machines, so only one machine in three runs at a
+  time. Operators have to move around to build enough stock to keep finishing fed.
+- **Randomness:** cycle times, prep delivery delays and disruptions, machine and station
+  breakdowns, and the initial stocks and machine setups.
+- Changeovers cost time when a machine switches product.
 
-### Observation (`Dict`, all values normalised to [0, 1])
-Stock fill levels (raw, intermediate, sell), current batch remaining, queued next batch and its
-priority ranking, busy operators, routing and cycle times (`prod_assignment`), pending raw-material
-delivery, and time of day.
+Every hour the agent gives each machine a product (or "idle") and a priority. Operators take the
+highest-priority machines. Between decisions they have some freedom: if their machine is starved,
+blocked or broken, they move to the next machine on the priority list.
 
-### Action (flat `Box(-1, 1, shape=(17,))`)
-With 2 products × 2 machines the action splits into:
-- `current_batch` (4): new size for the running batch (0–100), applied only when forced
-- `force_current_batch` (4): `> 0` stops the running batch and overrides its size (costs −5)
-- `next_batch` (4): size of the next batch to queue per (product, machine) (0–100)
-- `ranking_next` (4): priority of each queued batch (the highest is started first)
-- `order_raw_prod` (1): raw material to order (0–100). Orders of 10 or less are ignored
+Everything is described by a JSON plant config (`D00_Plant/configs/default.json`). All numbers in it
+are placeholders until real data is available.
 
-### Reward
-+ sale value of every unit sold, +0.1 per unit produced
-− 50 for queuing a batch on a machine that the product doesn't use
-− 5 for each forced batch change
-− 10 × quantity for ordering more raw material than the stock can hold
-− 3 per stolen unit
+### Event log
+Every simulation event is logged as `(t, event, entity, product, qty, detail)`. Events include
+component consumption, units started and finished, storage, starvation, blocking, operator
+moves, changeovers, prep deliveries, breakdowns, and finishing loads. Use
+`--events` in the evaluate script to get it as CSV.
 
 ## Repository layout
 
 ```
-A00 - Notebooks/A00-FirstAgent.ipynb   first exploration: scenario, env prototype, hand-written PPO
-B00_Agents/tinyshop{1,2,3}.py          successive versions of the ShopEnv (3 = current)
-C00_DQNs/ppo{1,2}.py                   SB3 PPO training/evaluation scripts (2 = current, uses tinyshop3)
-projet_atelier_fab/                    separate contributor's project, not part of this work
+D00_Plant/        plant simulation (sim.py), gym env (env.py), config, event log, baseline policies
+E00_MAPPO/        shared machine policy (model.py) and multi-agent PPO training (train.py)
+tests/            unit tests for the plant
+runs/             training outputs (gitignored)
+PROGRESS.md       current state, next steps, training results, decisions
+B00_Agents/, C00_DQNs/, A00 - Notebooks/   first toy shop with SB3 PPO (legacy)
 ```
 
 ## Setup
@@ -60,36 +61,16 @@ Use Python 3.11+. Install the `torch` build for your hardware first (CUDA or CPU
 pip install -r requirements.txt
 ```
 
-Development and training happen on different machines and are kept in sync through GitHub. See
-`PROGRESS.md` for the current state, the next steps, and past training runs.
-
-## Usage
-
-Train and evaluate. Run this from the repository root, because outputs are written to the current
-directory:
+## Usage (from the repository root)
 
 ```bash
-python C00_DQNs/ppo2.py
+python -m unittest discover tests                                   # tests
+python -m D00_Plant.evaluate --policy cover random idle --episodes 3  # baseline KPIs
+python -m D00_Plant.evaluate --policy cover --episodes 1 --events runs/events.csv
+python -m E00_MAPPO.train --run first --iterations 200 --envs 16      # training
 ```
 
-- Set `TRAIN = False` in `ppo2.py` to evaluate an existing `./ppo_shopenv/best_model` without
-  retraining.
-- Checkpoints go to `./ppo_shopenv/`, TensorBoard logs to `./logs/`, and per-episode plots to
-  `episode_*.png` (machine Gantt chart, sales, stock levels, orders, theft, production). All of these
-  are gitignored.
-- To follow training: `tensorboard --logdir=./logs`
+Training writes `runs/<run>/metrics.csv`, `model.pt`, `best.pt` and a copy of the plant config.
 
-Quick sanity check of the environment:
-
-```python
-from B00_Agents.tinyshop3 import ShopEnv
-env = ShopEnv(duration_max=7)
-obs, info = env.reset()
-obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
-env.render()   # returns a dict of logs (it does not draw)
-```
-
-## Status
-
-This is an early prototype. The environment runs and PPO trains on it, but the reward shaping and
-the dynamics are still being tuned. Known issues are listed in `CLAUDE.md`.
+Development and training happen on different machines, kept in sync through GitHub. See
+`PROGRESS.md`.

@@ -11,3 +11,6 @@ anaconda_projects/
 
 # Trained model checkpoints (large binaries, not source)
 *.zip
+
+# Training outputs (checkpoints, metrics, event logs)
+runs/
